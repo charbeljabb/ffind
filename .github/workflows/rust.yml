@@ -1,0 +1,86 @@
+name: Rust
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]          # pushing a tag like v0.1.0 also builds a release
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: ffind              # must match `name` in Cargo.toml
+
+jobs:
+  # Runs on every push and pull request, on all three operating systems,
+  # so the #[cfg(windows)] and #[cfg(target_os = "macos")] code gets compiled too.
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Lints
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --verbose
+      - name: Tests
+        run: cargo test --verbose
+
+  # Runs only when you push a version tag. Builds a release binary for each
+  # platform and attaches them to a GitHub Release.
+  release:
+    name: Release (${{ matrix.target }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin     # Apple Silicon Macs
+          - os: macos-latest
+            target: x86_64-apple-darwin      # Intel Macs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        run: |
+          # Bake the C runtime into the Windows .exe so it runs on a fresh PC
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            export RUSTFLAGS="-C target-feature=+crt-static"
+          fi
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          EXT=""
+          if [[ "${{ matrix.target }}" == *windows* ]]; then EXT=".exe"; fi
+          cp "target/${{ matrix.target }}/release/${BIN}${EXT}" "${BIN}-${{ matrix.target }}${EXT}"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.BIN }}-${{ matrix.target }}*
